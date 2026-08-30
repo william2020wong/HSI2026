@@ -3,10 +3,10 @@
 # ----------------------------------------------------------------------------------
 # 開始日期：2026-08        版本：v1.0    目的：恒指當日高低位預測
 # 更新日期：2026-08-30    版本：v2.0    目的：新增 Tab 2 盤中即市動態修正與牛熊證風控指南
-# 更新日期：2026-08-30    版本：v2.1    目的：移除固定時間標籤，優化 Tab 2 彈性與數據自動帶入 logic
 # 更新日期：2026-08-30    版本：v2.2    目的：修復 Tab 2 視覺對齊，恢復經典 2x2 對稱輸入框矩陣
 # 更新日期：2026-08-30    版本：v3.0    目的：新增 GitHub JSON 跨裝置雲端自動同步與牛熊街貨風控濾網
 # 更新日期：2026-08-30    版本：v3.1    目的：極致緊湊版面、期權 Call/Put 比率、除息高低水計算與北水流向
+# 更新日期：2026-08-30    版本：v3.2    目的：新增北水 (港股通) API 全自動抓取與除息點數實質高低水校正
 # ==================================================================================
 
 import streamlit as st
@@ -16,12 +16,29 @@ import numpy as np
 import json
 import base64
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
-st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.1", page_icon="📈", layout="centered")
+st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.2", page_icon="📈", layout="centered")
 
-st.title("📈 恒指每日波幅與即市戰略系統 v3.1")
+st.title("📈 恒指每日波幅與即市戰略系統 v3.2")
+
+# ----------------------------------------------------------------------
+# 北水 (港股通) 自動 API 抓取
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=1800)
+def fetch_southbound_flow():
+    try:
+        url = "https://push2.eastmoney.com/api/qt/kamt/get?fields1=f1,f3,f5&fields2=f51,f52"
+        res = requests.get(url, timeout=3).json()
+        data = res.get("data", {})
+        # 港股通南向資金總和 (億港元)
+        south_money = float(data.get("hk2south", {}).get("dayNetAmtIn", 0) or 0) / 10000.0
+        return round(south_money, 2)
+    except Exception:
+        return 0.0
+
+auto_north_flow = fetch_southbound_flow()
 
 # ----------------------------------------------------------------------
 # 雲端 JSON 資料庫連線 (GitHub REST API)
@@ -60,7 +77,7 @@ def save_cloud_data(data_dict, sha=None):
 cloud_saved_data, cloud_sha = get_cloud_data()
 today_str = datetime.now().strftime("%Y-%m-%d")
 
-# 1. 數據下載與模型訓練 (利用快取加速載入)
+# 1. 數據下載與模型訓練
 @st.cache_data(ttl=3600*4)
 def load_data_and_train():
     hsi = yf.download("^HSI", period="1y", interval="1d", progress=False)
@@ -136,21 +153,19 @@ prob_bullish_base = rf_class.predict_proba(latest_input)[0][1] * 100
 tab1, tab2 = st.tabs(["🌅 開市前預測", "⏱️ 盤中即市 & 牛熊戰略"])
 
 # ======================================================================
-# Tab 1: 開市前預測 (緊湊版面 + 除息高低水 + 期權 Call/Put Ratio + 北水)
+# Tab 1: 開市前預測
 # ======================================================================
 with tab1:
-    # 緊湊頂部數據
     st.caption(f"📅 **數據日期**：{latest_date} | **昨日收市**：`{last_close:.2f}` | **14日 ATR**：`{latest_atr:.2f}` | **100日涵蓋率**：`{hit_rate:.1f}%` (誤差 High ±{mae_high:.1f} / Low ±{mae_low:.1f})")
 
-    # 預設輸入值 (若雲端有紀錄且為今日則帶入)
+    # 雲端預設帶入
     init_night = cloud_saved_data.get("night_price", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
     init_open = cloud_saved_data.get("actual_open", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
     init_bull = cloud_saved_data.get("bull_pct", 50.0) if cloud_saved_data.get("date") == today_str else 50.0
     init_cp = cloud_saved_data.get("cp_ratio", 50.0) if cloud_saved_data.get("date") == today_str else 50.0
     init_div = cloud_saved_data.get("div_pts", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
-    init_north = cloud_saved_data.get("north_flow", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
+    init_north = cloud_saved_data.get("north_flow", auto_north_flow) if cloud_saved_data.get("date") == today_str else auto_north_flow
 
-    # 3 欄式基礎設定
     c1, c2, c3 = st.columns(3)
     with c1:
         night_price = st.number_input("【步驟 1】夜期/ADR 收市", value=float(init_night), step=10.0, key="t1_night")
@@ -160,7 +175,6 @@ with tab1:
         stage_options = {"0": "☕ 正常日", "-1": "🤫 業績/消息前夕", "1": "💥 業績/消息落地"}
         selected_stage = st.selectbox("【步驟 3】交易情境", options=list(stage_options.keys()), format_func=lambda x: stage_options[x], index=0, key="t1_stage")
 
-    # 4 欄式大戶籌碼輸入
     st.markdown("**【步驟 4】大戶籌碼與衍生品 (選填)**")
     fc1, fc2, fc3, fc4 = st.columns(4)
     with fc1:
@@ -168,11 +182,10 @@ with tab1:
     with fc2:
         cp_ratio = st.number_input("📈 期權 Call 佔比 (%)", value=float(init_cp), min_value=10.0, max_value=90.0, step=1.0)
     with fc3:
-        div_pts = st.number_input("✂️ 預計除息 (點)", value=float(init_div), min_value=0.0, step=5.0, help="例如 9月初成份股除息扣減點數")
+        div_pts = st.number_input("✂️ 預計除息 (點)", value=float(init_div), min_value=0.0, step=5.0, help="月內成份股預計除息點數，系統自動校正實質高低水")
     with fc4:
-        north_flow = st.number_input("🌊 北水淨流入 (億)", value=float(init_north), step=5.0)
+        north_flow = st.number_input("🌊 北水淨流入 (億)", value=float(init_north), step=1.0, help="系統已自動API讀取，可手動覆蓋")
 
-    # 雲端儲存按鈕
     if st.button("💾 儲存今日戰略 (跨裝置雲端同步)", use_container_width=True):
         save_payload = {
             "date": today_str,
@@ -190,12 +203,11 @@ with tab1:
 
     ref_open = actual_open if actual_open > 0 else (night_price if night_price > 0 else last_close)
 
-    # 期指高低水與除息計算
+    # 實質高低水點數換算
     raw_premium = (night_price - last_close) if night_price > 0 else 0.0
     real_premium = raw_premium - div_pts
     prem_text = "高水" if real_premium >= 0 else "低水"
 
-    # 動態波幅計算
     multiplier = 0.80 if selected_stage == "-1" else (1.35 if selected_stage == "1" else 1.00)
     pred_upper_pct = base_pred_upper_pct * multiplier
     pred_lower_pct = base_pred_lower_pct * multiplier
@@ -207,7 +219,6 @@ with tab1:
     buy_high, buy_low = pred_low + atr_buffer, pred_low
     sell_low, sell_high = pred_high - atr_buffer, pred_high
 
-    # 機率綜合籌碼修正
     prob_bullish = prob_bullish_base
     chip_warning = None
 
@@ -227,21 +238,18 @@ with tab1:
 
     st.divider()
 
-    # 高低水與北水狀態列
-    north_status = f"🟢 北水淨流入 `{north_flow:+.1f} 億`" if north_flow >= 0 else f"🔴 北水淨流出 `{north_flow:+.1f} 億`"
+    north_status = f"🟢 北水自動連線：淨流入 `{north_flow:+.2f} 億`" if north_flow >= 0 else f"🔴 北水自動連線：淨流出 `{north_flow:+.2f} 億`"
     st.info(f"📊 **期指高低水**：原始 `{raw_premium:+.1f} 點` | 扣除除息(`-{div_pts:.0f}點`)後實質：**`{real_premium:+.1f} 點` ({prem_text})**  \n{north_status}")
 
     if chip_warning:
         st.error(chip_warning)
 
-    # 今日預測結果 (雙欄)
     col_res1, col_res2 = st.columns(2)
     col_res1.metric("預測最高價 (High)", f"{pred_high:.2f}", f"+{pred_upper_pct*100:.2f}%")
     col_res2.metric("預測最低價 (Low)", f"{pred_low:.2f}", f"-{pred_lower_pct*100:.2f}%")
 
     st.write(f"📈 陽燭機率：**{prob_bullish:.1f}%** | 📉 陰燭機率：**{prob_bearish:.1f}%** | 全日預計波幅：**{pred_high - pred_low:.2f} 點**")
 
-    # Trading Plan 區塊
     st.markdown("**⚔️ Actionable Trading Plan**")
     if bull_pct >= 55.0:
         st.write(f"🟢 **Buy Zone**：`{buy_low:.2f} - {buy_high:.2f}` ⚠️ **(牛證偏多，嚴防陷阱插針，延遲出手)**")
@@ -256,7 +264,7 @@ with tab1:
     st.write(f"🛡️ **強弱分界線**：`{ref_open:.2f}`")
 
 # ======================================================================
-# Tab 2: 盤中即市修正 & 牛熊證風控指南 (經典 2x2 對稱)
+# Tab 2: 盤中即市修正 & 牛熊證風控指南
 # ======================================================================
 with tab2:
     st.subheader("⏱️ 盤中即市實時動態修正")
