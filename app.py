@@ -7,8 +7,10 @@
 # 更新日期：2026-08-30    版本：v3.0    目的：新增 GitHub JSON 跨裝置雲端自動同步與牛熊街貨風控濾網
 # 更新日期：2026-08-30    版本：v3.1    目的：極致緊湊版面、期權 Call/Put 比率、除息高低水計算與北水流向
 # 更新日期：2026-08-30    版本：v3.2    目的：新增北水 (港股通) API 全自動抓取與除息點數實質高低水校正
-# 更新日期：2026-08-30    版本：v3.3    目的：修正北水 API 週末歸零問題，自動追溯最近交易日 (如上週五) 數據
+# 更新日期：2026-08-30    版本：v3.3    目的：修正北水 API 週末歸零問題，自動追溯最近交易日數據
 # 更新日期：2026-08-30    版本：v3.4    目的：新增北水數據交易日期顯示，方便識別 A股/港股假期不同步狀況
+# 更新日期：2026-08-30    版本：v3.5    目的：加入防爬蟲 User-Agent 標頭，修復 Streamlit 雲端 API 抓取失敗問題
+# 更新日期：2026-08-30    版本：v3.6    目的：精簡【步驟 4】北水標籤文字，解決手機/平板溢出與排版錯位問題
 # ==================================================================================
 
 import streamlit as st
@@ -21,27 +23,44 @@ import requests
 from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
-st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.4", page_icon="📈", layout="centered")
+st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.6", page_icon="📈", layout="centered")
 
-st.title("📈 恒指每日波幅與即市戰略系統 v3.4")
+st.title("📈 恒指每日波幅與即市戰略系統 v3.6")
 
 # ----------------------------------------------------------------------
-# 北水 (港股通) 自動 API 抓取 (支援確切交易日期標籤)
+# 北水 (港股通) 自動 API 抓取
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def fetch_southbound_flow():
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://quote.eastmoney.com/"
+    }
     try:
-        his_url = "https://push2his.eastmoney.com/api/qt/kamt.kline/get?fields1=f1,f2,f3,f4,f5&fields2=f51,f52&klt=101&lmt=5"
-        his_res = requests.get(his_url, timeout=3).json()
-        hk2s_klines = his_res.get("data", {}).get("hk2south", [])
+        his_url = "https://push2his.eastmoney.com/api/qt/kamt.kline/get?fields1=f1,f2,f3,f4,f5&fields2=f51,f52&klt=101&lmt=10"
+        res = requests.get(his_url, headers=headers, timeout=5).json()
+        hk2s_klines = res.get("data", {}).get("hk2south", [])
         if hk2s_klines:
             last_record = hk2s_klines[-1].split(",")
-            flow_date = last_record[0]  # e.g., "2026-08-28"
+            flow_date = last_record[0]
             south_money = float(last_record[1]) / 10000.0
             return round(south_money, 2), flow_date
-        return 0.0, "未知"
     except Exception:
-        return 0.0, "未知"
+        pass
+
+    try:
+        url = "https://push2.eastmoney.com/api/qt/kamt/get?fields1=f1,f3,f5&fields2=f51,f52"
+        res = requests.get(url, headers=headers, timeout=5).json()
+        data = res.get("data", {})
+        hk2s = data.get("hk2south", {})
+        south_money = float(hk2s.get("dayNetAmtIn", 0) or 0) / 10000.0
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        if south_money != 0:
+            return round(south_money, 2), date_str
+    except Exception:
+        pass
+
+    return 0.0, "需手動"
 
 auto_north_flow, north_date = fetch_southbound_flow()
 
@@ -189,7 +208,7 @@ with tab1:
     with fc3:
         div_pts = st.number_input("✂️ 預計除息 (點)", value=float(init_div), min_value=0.0, step=5.0, help="月內成份股預計除息點數，系統自動校正實質高低水")
     with fc4:
-        north_flow = st.number_input(f"🌊 北水淨流入 (億) [{north_date}]", value=float(init_north), step=1.0, help=f"數據對應交易日：{north_date}。可手動覆蓋。")
+        north_flow = st.number_input("🌊 北水 (億)", value=float(init_north), step=1.0, help=f"對應交易日：{north_date}。系統已自動API讀取，可手動覆蓋。")
 
     if st.button("💾 儲存今日戰略 (跨裝置雲端同步)", use_container_width=True):
         save_payload = {
