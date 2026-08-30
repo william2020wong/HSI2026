@@ -2,5 +2,8 @@
   "date": "2026-08-30",
   "night_price": 25472.0,
   "actual_open": 0.0,
-  "bull_pct": 53.0
+  "bull_pct": 53.0,
+  "cp_ratio": 54.0,
+  "div_pts": 0.0,
+  "north_flow": 0.0
 }
