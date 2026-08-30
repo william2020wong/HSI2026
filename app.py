@@ -7,6 +7,8 @@
 # 更新日期：2026-08-30    版本：v3.0    目的：新增 GitHub JSON 跨裝置雲端自動同步與牛熊街貨風控濾網
 # 更新日期：2026-08-30    版本：v3.1    目的：極致緊湊版面、期權 Call/Put 比率、除息高低水計算與北水流向
 # 更新日期：2026-08-30    版本：v3.2    目的：新增北水 (港股通) API 全自動抓取與除息點數實質高低水校正
+# 更新日期：2026-08-30    版本：v3.3    目的：修正北水 API 週末歸零問題，自動追溯最近交易日 (如上週五) 數據
+# 更新日期：2026-08-30    版本：v3.4    目的：新增北水數據交易日期顯示，方便識別 A股/港股假期不同步狀況
 # ==================================================================================
 
 import streamlit as st
@@ -19,26 +21,29 @@ import requests
 from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
-st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.2", page_icon="📈", layout="centered")
+st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.4", page_icon="📈", layout="centered")
 
-st.title("📈 恒指每日波幅與即市戰略系統 v3.2")
+st.title("📈 恒指每日波幅與即市戰略系統 v3.4")
 
 # ----------------------------------------------------------------------
-# 北水 (港股通) 自動 API 抓取
+# 北水 (港股通) 自動 API 抓取 (支援確切交易日期標籤)
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def fetch_southbound_flow():
     try:
-        url = "https://push2.eastmoney.com/api/qt/kamt/get?fields1=f1,f3,f5&fields2=f51,f52"
-        res = requests.get(url, timeout=3).json()
-        data = res.get("data", {})
-        # 港股通南向資金總和 (億港元)
-        south_money = float(data.get("hk2south", {}).get("dayNetAmtIn", 0) or 0) / 10000.0
-        return round(south_money, 2)
+        his_url = "https://push2his.eastmoney.com/api/qt/kamt.kline/get?fields1=f1,f2,f3,f4,f5&fields2=f51,f52&klt=101&lmt=5"
+        his_res = requests.get(his_url, timeout=3).json()
+        hk2s_klines = his_res.get("data", {}).get("hk2south", [])
+        if hk2s_klines:
+            last_record = hk2s_klines[-1].split(",")
+            flow_date = last_record[0]  # e.g., "2026-08-28"
+            south_money = float(last_record[1]) / 10000.0
+            return round(south_money, 2), flow_date
+        return 0.0, "未知"
     except Exception:
-        return 0.0
+        return 0.0, "未知"
 
-auto_north_flow = fetch_southbound_flow()
+auto_north_flow, north_date = fetch_southbound_flow()
 
 # ----------------------------------------------------------------------
 # 雲端 JSON 資料庫連線 (GitHub REST API)
@@ -184,7 +189,7 @@ with tab1:
     with fc3:
         div_pts = st.number_input("✂️ 預計除息 (點)", value=float(init_div), min_value=0.0, step=5.0, help="月內成份股預計除息點數，系統自動校正實質高低水")
     with fc4:
-        north_flow = st.number_input("🌊 北水淨流入 (億)", value=float(init_north), step=1.0, help="系統已自動API讀取，可手動覆蓋")
+        north_flow = st.number_input(f"🌊 北水淨流入 (億) [{north_date}]", value=float(init_north), step=1.0, help=f"數據對應交易日：{north_date}。可手動覆蓋。")
 
     if st.button("💾 儲存今日戰略 (跨裝置雲端同步)", use_container_width=True):
         save_payload = {
@@ -238,7 +243,7 @@ with tab1:
 
     st.divider()
 
-    north_status = f"🟢 北水自動連線：淨流入 `{north_flow:+.2f} 億`" if north_flow >= 0 else f"🔴 北水自動連線：淨流出 `{north_flow:+.2f} 億`"
+    north_status = f"🟢 北水連線 ({north_date})：淨流入 `{north_flow:+.2f} 億`" if north_flow >= 0 else f"🔴 北水連線 ({north_date})：淨流出 `{north_flow:+.2f} 億`"
     st.info(f"📊 **期指高低水**：原始 `{raw_premium:+.1f} 點` | 扣除除息(`-{div_pts:.0f}點`)後實質：**`{real_premium:+.1f} 點` ({prem_text})**  \n{north_status}")
 
     if chip_warning:
