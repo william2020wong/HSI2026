@@ -4,6 +4,7 @@
 # 開始日期：2026-08        版本：v1.0    目的：恒指當日高低位預測
 # 更新日期：2026-08-30    版本：v2.0    目的：新增 Tab 2 盤中即市動態修正與牛熊證風控指南
 # 更新日期：2026-08-30    版本：v2.1    目的：移除固定時間標籤，優化 Tab 2 彈性與數據自動帶入 logic
+# 更新日期：2026-08-30    版本：v2.2    目的：修復 Tab 2 視覺對齊，恢復經典 2x2 對稱輸入框矩陣
 # ==================================================================================
 
 import streamlit as st
@@ -180,15 +181,15 @@ with tab2:
 
     col_i1, col_i2 = st.columns(2)
     with col_i1:
-        st.write(f"📌 **09:30 開市參考價**：`{ref_open:.2f}` (已自動由 Tab 1 帶入)")
+        intraday_open = st.number_input("09:30 開市參考價", value=ref_open, step=10.0, key="t2_open")
         current_price = st.number_input("即時恒指現價", value=ref_open, step=10.0, key="t2_curr")
     with col_i2:
         morning_high = st.number_input("今晨已出現最高價", value=max(ref_open, current_price), step=10.0, key="t2_high")
         morning_low = st.number_input("今晨已出現最低價", value=min(ref_open, current_price), step=10.0, key="t2_low")
 
     # 動態計算開市前目標
-    pred_h_t2 = ref_open * (1 + base_pred_upper_pct)
-    pred_l_t2 = ref_open * (1 - base_pred_lower_pct)
+    pred_h_t2 = intraday_open * (1 + base_pred_upper_pct)
+    pred_l_t2 = intraday_open * (1 - base_pred_lower_pct)
 
     # 剩餘波幅計算
     up_space = pred_h_t2 - current_price
