@@ -3,14 +3,10 @@
 # ----------------------------------------------------------------------------------
 # 開始日期：2026-08        版本：v1.0    目的：恒指當日高低位預測
 # 更新日期：2026-08-30    版本：v2.0    目的：新增 Tab 2 盤中即市動態修正與牛熊證風控指南
-# 更新日期：2026-08-30    版本：v2.2    目的：修復 Tab 2 視覺對齊，恢復經典 2x2 對稱輸入框矩陣
-# 更新日期：2026-08-30    版本：v3.0    目的：新增 GitHub JSON 跨裝置雲端自動同步與牛熊街貨風控濾網
 # 更新日期：2026-08-30    版本：v3.1    目的：極致緊湊版面、期權 Call/Put 比率、除息高低水計算與北水流向
-# 更新日期：2026-08-30    版本：v3.2    目的：新增北水 (港股通) API 全自動抓取與除息點數實質高低水校正
-# 更新日期：2026-08-30    版本：v3.3    目的：修正北水 API 週末歸零問題，自動追溯最近交易日數據
-# 更新日期：2026-08-30    版本：v3.4    目的：新增北水數據交易日期顯示，方便識別 A股/港股假期不同步狀況
 # 更新日期：2026-08-30    版本：v3.5    目的：加入防爬蟲 User-Agent 標頭，修復 Streamlit 雲端 API 抓取失敗問題
 # 更新日期：2026-08-30    版本：v3.6    目的：精簡【步驟 4】北水標籤文字，解決手機/平板溢出與排版錯位問題
+# 更新日期：2026-09-02    版本：v3.7    目的：修復 yfinance 雲端抓取空數據導致的 ValueError 當機，加入防護機制
 # ==================================================================================
 
 import streamlit as st
@@ -23,9 +19,9 @@ import requests
 from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
-st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.6", page_icon="📈", layout="centered")
+st.set_page_config(page_title="恒指波幅與即市戰略系統 v3.7", page_icon="📈", layout="centered")
 
-st.title("📈 恒指每日波幅與即市戰略系統 v3.6")
+st.title("📈 恒指每日波幅與即市戰略系統 v3.7")
 
 # ----------------------------------------------------------------------
 # 北水 (港股通) 自動 API 抓取
@@ -101,61 +97,85 @@ def save_cloud_data(data_dict, sha=None):
 cloud_saved_data, cloud_sha = get_cloud_data()
 today_str = datetime.now().strftime("%Y-%m-%d")
 
-# 1. 數據下載與模型訓練
-@st.cache_data(ttl=3600*4)
+# ----------------------------------------------------------------------
+# 1. 數據下載與模型訓練 (含防當機機制)
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=3600*4, show_spinner=False)
 def load_data_and_train():
-    hsi = yf.download("^HSI", period="1y", interval="1d", progress=False)
-    if isinstance(hsi.columns, pd.MultiIndex):
-        hsi.columns = hsi.columns.get_level_values(0)
+    try:
+        # 改用更穩定的 Ticker history 方法
+        ticker = yf.Ticker("^HSI")
+        hsi = ticker.history(period="1y", interval="1d")
+        
+        # 防呆檢查：如果 Yahoo Finance 阻擋連線回傳空數據
+        if hsi.empty or len(hsi) < 50:
+            return None, None, None, None, None, 0, 0, 0
+            
+        # 確保欄位名稱標準化
+        if isinstance(hsi.columns, pd.MultiIndex):
+            hsi.columns = hsi.columns.get_level_values(0)
+        hsi.rename(columns=lambda x: str(x).capitalize(), inplace=True)
 
-    tr1 = hsi['High'] - hsi['Low']
-    tr2 = (hsi['High'] - hsi['Close'].shift(1)).abs()
-    tr3 = (hsi['Low'] - hsi['Close'].shift(1)).abs()
-    hsi['TR'] = np.maximum(tr1, np.maximum(tr2, tr3))
-    hsi['ATR_14'] = hsi['TR'].rolling(14).mean()
-    hsi['ATR_pct'] = hsi['ATR_14'] / hsi['Open']
+        tr1 = hsi['High'] - hsi['Low']
+        tr2 = (hsi['High'] - hsi['Close'].shift(1)).abs()
+        tr3 = (hsi['Low'] - hsi['Close'].shift(1)).abs()
+        hsi['TR'] = np.maximum(tr1, np.maximum(tr2, tr3))
+        hsi['ATR_14'] = hsi['TR'].rolling(14).mean()
+        hsi['ATR_pct'] = hsi['ATR_14'] / hsi['Open']
 
-    hsi['Parkinson_Vol'] = np.sqrt((1 / (4 * np.log(2))) * (np.log(hsi['High'] / hsi['Low']) ** 2))
-    hsi['Upper_Range'] = (hsi['High'] - hsi['Open']) / hsi['Open']
-    hsi['Lower_Range'] = (hsi['Open'] - hsi['Low']) / hsi['Open']
-    hsi['Is_Bullish'] = (hsi['Close'] > hsi['Open']).astype(int)
+        hsi['Parkinson_Vol'] = np.sqrt((1 / (4 * np.log(2))) * (np.log(hsi['High'] / hsi['Low']) ** 2))
+        hsi['Upper_Range'] = (hsi['High'] - hsi['Open']) / hsi['Open']
+        hsi['Lower_Range'] = (hsi['Open'] - hsi['Low']) / hsi['Open']
+        hsi['Is_Bullish'] = (hsi['Close'] > hsi['Open']).astype(int)
 
-    hsi['Upper_Range_D'] = hsi['Upper_Range'].shift(1)
-    hsi['Upper_Range_W'] = hsi['Upper_Range'].shift(1).rolling(5).mean()
-    hsi['Lower_Range_D'] = hsi['Lower_Range'].shift(1)
-    hsi['Lower_Range_W'] = hsi['Lower_Range'].shift(1).rolling(5).mean()
-    hsi['ATR_D'] = hsi['ATR_pct'].shift(1)
-    hsi['Parkinson_D'] = hsi['Parkinson_Vol'].shift(1)
+        hsi['Upper_Range_D'] = hsi['Upper_Range'].shift(1)
+        hsi['Upper_Range_W'] = hsi['Upper_Range'].shift(1).rolling(5).mean()
+        hsi['Lower_Range_D'] = hsi['Lower_Range'].shift(1)
+        hsi['Lower_Range_W'] = hsi['Lower_Range'].shift(1).rolling(5).mean()
+        hsi['ATR_D'] = hsi['ATR_pct'].shift(1)
+        hsi['Parkinson_D'] = hsi['Parkinson_Vol'].shift(1)
 
-    df = hsi.dropna().copy()
-    features = ['Upper_Range_D', 'Upper_Range_W', 'Lower_Range_D', 'Lower_Range_W', 'ATR_D', 'Parkinson_D']
+        df = hsi.dropna().copy()
+        
+        # 二次防呆：確保清理 NaN 後仍有足夠數據訓練
+        if len(df) < 50:
+            return None, None, None, None, None, 0, 0, 0
 
-    n_samples = len(df)
-    sample_weights = np.array([0.995 ** (n_samples - i - 1) for i in range(n_samples)])
+        features = ['Upper_Range_D', 'Upper_Range_W', 'Lower_Range_D', 'Lower_Range_W', 'ATR_D', 'Parkinson_D']
 
-    rf_upper = RandomForestRegressor(n_estimators=100, max_depth=12, min_samples_leaf=2, random_state=42)
-    rf_lower = RandomForestRegressor(n_estimators=100, max_depth=12, min_samples_leaf=2, random_state=42)
-    rf_class = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+        n_samples = len(df)
+        sample_weights = np.array([0.995 ** (n_samples - i - 1) for i in range(n_samples)])
 
-    rf_upper.fit(df[features], df['Upper_Range'], sample_weight=sample_weights)
-    rf_lower.fit(df[features], df['Lower_Range'], sample_weight=sample_weights)
-    rf_class.fit(df[features], df['Is_Bullish'], sample_weight=sample_weights)
+        rf_upper = RandomForestRegressor(n_estimators=100, max_depth=12, min_samples_leaf=2, random_state=42)
+        rf_lower = RandomForestRegressor(n_estimators=100, max_depth=12, min_samples_leaf=2, random_state=42)
+        rf_class = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
 
-    bt_df = df.tail(100).copy()
-    bt_pred_upper = rf_upper.predict(bt_df[features])
-    bt_pred_lower = rf_lower.predict(bt_df[features])
-    bt_pred_high = bt_df['Open'] * (1 + bt_pred_upper)
-    bt_pred_low = bt_df['Open'] * (1 - bt_pred_lower)
+        rf_upper.fit(df[features], df['Upper_Range'], sample_weight=sample_weights)
+        rf_lower.fit(df[features], df['Lower_Range'], sample_weight=sample_weights)
+        rf_class.fit(df[features], df['Is_Bullish'], sample_weight=sample_weights)
 
-    mae_high = (bt_df['High'] - bt_pred_high).abs().mean()
-    mae_low = (bt_df['Low'] - bt_pred_low).abs().mean()
-    both_hit = ((bt_df['High'] <= bt_pred_high) & (bt_df['Low'] >= bt_pred_low)).sum()
-    hit_rate = (both_hit / 100) * 100
+        bt_df = df.tail(100).copy()
+        bt_pred_upper = rf_upper.predict(bt_df[features])
+        bt_pred_lower = rf_lower.predict(bt_df[features])
+        bt_pred_high = bt_df['Open'] * (1 + bt_pred_upper)
+        bt_pred_low = bt_df['Open'] * (1 - bt_pred_lower)
 
-    return df, features, rf_upper, rf_lower, rf_class, hit_rate, mae_high, mae_low
+        mae_high = (bt_df['High'] - bt_pred_high).abs().mean()
+        mae_low = (bt_df['Low'] - bt_pred_low).abs().mean()
+        both_hit = ((bt_df['High'] <= bt_pred_high) & (bt_df['Low'] >= bt_pred_low)).sum()
+        hit_rate = (both_hit / 100) * 100
 
-with st.spinner("正更新數據與模型中..."):
+        return df, features, rf_upper, rf_lower, rf_class, hit_rate, mae_high, mae_low
+    except Exception as e:
+        return None, None, None, None, None, 0, 0, 0
+
+with st.spinner("正安全連線並更新市場數據中... (若停頓請稍候)"):
     df, features, rf_upper, rf_lower, rf_class, hit_rate, mae_high, mae_low = load_data_and_train()
+
+# 若抓不到數據，啟動安全阻斷，顯示友善提示而非 Error
+if df is None:
+    st.error("🚨 **無法從 Yahoo Finance 獲取恒指歷史數據！** \n\n這通常是因為 Streamlit 雲端伺服器短暫被 Yahoo 限制連線 (Rate Limit)。\n\n**解決方法**：\n1. 點擊右上角 `⋮` 選單 -> `Clear cache` (清除快取)。\n2. 等待 2-3 分鐘後再重新整理頁面。")
+    st.stop()
 
 last_close = float(df['Close'].iloc[-1])
 latest_atr = float(df['ATR_14'].iloc[-1])
@@ -182,7 +202,6 @@ tab1, tab2 = st.tabs(["🌅 開市前預測", "⏱️ 盤中即市 & 牛熊戰�
 with tab1:
     st.caption(f"📅 **數據日期**：{latest_date} | **昨日收市**：`{last_close:.2f}` | **14日 ATR**：`{latest_atr:.2f}` | **100日涵蓋率**：`{hit_rate:.1f}%` (誤差 High ±{mae_high:.1f} / Low ±{mae_low:.1f})")
 
-    # 雲端預設帶入
     init_night = cloud_saved_data.get("night_price", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
     init_open = cloud_saved_data.get("actual_open", 0.0) if cloud_saved_data.get("date") == today_str else 0.0
     init_bull = cloud_saved_data.get("bull_pct", 50.0) if cloud_saved_data.get("date") == today_str else 50.0
@@ -227,7 +246,6 @@ with tab1:
 
     ref_open = actual_open if actual_open > 0 else (night_price if night_price > 0 else last_close)
 
-    # 實質高低水點數換算
     raw_premium = (night_price - last_close) if night_price > 0 else 0.0
     real_premium = raw_premium - div_pts
     prem_text = "高水" if real_premium >= 0 else "低水"
