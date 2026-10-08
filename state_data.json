@@ -1,9 +1,9 @@
 {
-  "date": "2026-10-07",
-  "night_price": 24254.0,
-  "actual_open": 24172.0,
-  "bull_pct": 53.81,
-  "cp_ratio": 54.0,
+  "date": "2026-10-08",
+  "night_price": 23962.0,
+  "actual_open": 24031.66,
+  "bull_pct": 54.3,
+  "cp_ratio": 49.0,
   "div_pts": 0.0,
-  "north_flow": 0.0
+  "north_flow": 68.64
 }
