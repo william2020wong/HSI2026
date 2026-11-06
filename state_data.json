@@ -1,9 +1,9 @@
 {
-  "date": "2026-11-05",
-  "night_price": 24425.0,
-  "actual_open": 24316.0,
-  "bull_pct": 49.6,
-  "cp_ratio": 50.0,
-  "div_pts": 30.0,
-  "north_flow": -32.77
+  "date": "2026-11-06",
+  "night_price": 24494.0,
+  "actual_open": 0.0024404,
+  "bull_pct": 45.0,
+  "cp_ratio": 43.0,
+  "div_pts": 0.0,
+  "north_flow": 0.0
 }
